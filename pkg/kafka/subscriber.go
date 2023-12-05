@@ -467,6 +467,7 @@ func (s *Subscriber) createMessagesHandler(output chan *message.Message) message
 	return messageHandler{
 		outputChannel:   output,
 		unmarshaler:     s.config.Unmarshaler,
+		saramaConfig:    s.config.OverwriteSaramaConfig,
 		nackResendSleep: s.config.NackResendSleep,
 		logger:          s.logger,
 		closing:         s.closing,
@@ -529,6 +530,7 @@ func (h consumerGroupHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, cla
 type messageHandler struct {
 	outputChannel chan<- *message.Message
 	unmarshaler   Unmarshaler
+	saramaConfig  *sarama.Config
 
 	nackResendSleep time.Duration
 
@@ -585,6 +587,10 @@ ResendLoop:
 		case <-msg.Acked():
 			if sess != nil {
 				sess.MarkMessage(kafkaMsg, "")
+				if !h.saramaConfig.Consumer.Offsets.AutoCommit.Enable {
+					// AutoCommit is disabled, so we should commit offset explicitly
+					sess.Commit()
+				}
 			}
 			h.logger.Trace("Message Acked", receivedMsgLogFields)
 			break ResendLoop
@@ -603,6 +609,9 @@ ResendLoop:
 			return nil
 		case <-ctx.Done():
 			h.logger.Trace("Closing, ctx cancelled before ack", receivedMsgLogFields)
+			return nil
+		case <-sess.Context().Done():
+			h.logger.Debug("Session ctx was cancelled, stopping consumerGroupHandler", receivedMsgLogFields)
 			return nil
 		}
 	}
